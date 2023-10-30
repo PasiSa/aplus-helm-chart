@@ -1,7 +1,5 @@
 # Deploying A+ in a fresh Kubernetes environment
 
-*(Note: this document is still work-in-progress and contains incomplete sections)*
-
 This document describes the steps taken to install A+ using the helm charts in
 this repository in a fresh Kubernetes setup. It first describes how a small
 [MicroK8s](https://microk8s.io/) Kubernetes environment of three nodes was
@@ -23,9 +21,9 @@ be faster.
 
 Three Ubuntu 22.04 machines were set up for this exercise. The goal was to
 experiment with setting up A+ in a small, yet usable server environment for
-small-scale use. Canonical's MicroK8s was selected, because it appeared to be
-easy to set up (at least on Ubuntu machines), but is extensible and scalable
-for more serious use.
+small-scale use. Canonical's MicroK8s was selected, because it was easy to set
+up (at least on Ubuntu machines), but seems extensible and scalable also for
+more serious use.
 
 ### First steps
 
@@ -89,7 +87,7 @@ e.g.: `microk8s kubectl get nodes`, but for convenience, an alias is useful:
 
     alias kubectl='microk8s kubectl'
 
-Commonly you also want to operate kubectl from your local machine outside the
+Usually you would also want to operate kubectl from your local machine outside the
 cluster. In local configuration the Kubernetes config file is needed, and it can
 be generated in the following way (selecting the target file as appropriate in
 your case):
@@ -104,15 +102,49 @@ kubectl access from outside the cluster's network domain.
 
 ### Setting up NFS
 
-*TODO: this section needs more work. NFS-CSI driver was used, but I will need to
-figure out some details before I can write about it.*
+We follow quite closely the [MicroK8s
+documentation](https://microk8s.io/docs/nfs) regarding NFS setup. An existing
+NFS server was available for our use, but if you need to set up one by yourself,
+there are instructions for that in the aforementioned documentation. The
+MicroK8s instructions were followed to set up a NFS-CSI driver:
 
-### Setting up Web dashboard for the cluster
+    microk8s helm3 repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+    microk8s helm3 install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
+        --namespace kube-system \
+        --set kubeletDir=/var/snap/microk8s/common/var/lib/kubelet
+    microk8s kubectl wait pod --selector app.kubernetes.io/name=csi-driver-nfs --for condition=ready --namespace kube-system
 
-*TODO: I managed to get dashboard work in a clumsy way (using manually created
-JWT tokens based on similar approach to what e.g. gitmanager uses and manually
-configured port forwarding), but want to figure out a better way that can be
-documented here.*
+Then, further following the instructions, NFS-CSI storage class was created, but
+few modifications were done to the yaml configuration. Our version was
+(obviously, you will need to set the server address and share properly for your
+environment):
+
+    apiVersion: storage.k8s.io/v1
+    kind: StorageClass
+    metadata:
+        name: nfs-csi
+    provisioner: nfs.csi.k8s.io
+    parameters:
+        server: nfs.server.com
+        share: /share/path
+        subDir: ${pvc.metadata.name}
+    reclaimPolicy: Retain
+    volumeBindingMode: Immediate
+    mountOptions:
+    - hard
+    - nfsvers=4.2
+
+`reclaimPolicy` was set to "*Retain*", so that the volumes persist if the
+cluster is shut down. By default NFS-CSI generates seemingly random names for
+the subdirectories in the NFS share when the cluster is started, but with the
+given `subDir` setting the subdirectories are named according to the PVC names
+set in the values file (for example, "aplusMedia", "gitmanagerBuild", and so
+on). This is necessary in addition to the reclaimPolicy setting so that the data
+remains usable if cluster is shut down and later restarted.
+
+This configuration can then be applied in the Kubernetes cluster:
+
+    kubectl apply -f - < sc-nfs.yaml
 
 
 ## Deploying A+ from Helm charts
@@ -136,9 +168,10 @@ Also the SSH host key of the Git server(s) used by Gitmanager need to be
 configured using `knownHosts` attribute to allow git cloning work (if ssh is to
 be used as the access method).
 
-At least in the case of the above described MicroK8s configuration, also the
-Persistent Volume settings need to be configured. (*TODO: will be documented
-later, as I yet need to figure out a few things.*)
+In the case of the earlier mentioned NFS-CSI configuration, the
+`storageClassName` needs to be set to `nfs-csi`. If you follow the example of
+values-minikube-testing.yaml, just replace "standard" with the correct
+storageClassName setting.
 
 Also setting `secretKey` and `dbPassword` is recommended, although not needed
 for initial trials. These can be any random strings.
@@ -216,7 +249,7 @@ Also the database in Gitmanager needs have the migrations run:
     python3 manage.py migrate
 
 While in Gitmanager shell, you should also create a JWT token that is needed to
-access the Gitmanager web interface:
+access the Gitmanager web interface, for configuring a new course in A+:
 
     echo '[]' | python3 manage.py gentoken 'YOUR NAME HERE' 10h
 
